@@ -5,7 +5,7 @@ from datetime import datetime
 
 from flask import Flask, request, make_response, abort, redirect, render_template, \
                   url_for, session, flash
-from flask.ext.script import Manager
+from flask.ext.script import Manager, Shell
 from flask.ext.bootstrap import Bootstrap
 from flask.ext.moment import Moment
 
@@ -14,6 +14,7 @@ from wtforms import StringField, SubmitField
 from wtforms.validators import Required
 
 from flask.ext.sqlalchemy import SQLAlchemy
+from flask.ext.migrate import Migrate, MigrateCommand
 
 basedir = os.path.abspath(os.path.dirname(__file__))
 
@@ -25,10 +26,19 @@ app.config['SECRET_KEY'] = 'hard to guess string'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'data.sqlite')
 app.config['SQLALCHEMY_COMMIT_ON_TEARDOWN'] = True
 
-mgr = Manager(app)
 bootstrap = Bootstrap(app)
 moment = Moment(app)
 db = SQLAlchemy(app)
+mgr = Manager(app)
+migrate = Migrate(app, db)
+
+
+def make_shell_context():
+    return dict(app=app, db=db, User=User, Role=Role)
+
+
+mgr.add_command('shell', Shell(make_context=make_shell_context))
+mgr.add_command('db', MigrateCommand)
 
 
 class NameForm(Form):
@@ -40,10 +50,10 @@ class Role(db.Model):
     __tablename__ = 'roles'
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(64), unique=True)
-    users = db.relationship('User', backref='role')
+    users = db.relationship('User', backref='role', lazy='dynamic')
 
     def __repr__(self):
-        return '<Role %r>' % self.name
+        return '<%r %r>' % (self.__class__.__name__, self.name)
 
 
 class User(db.Model):
@@ -53,7 +63,15 @@ class User(db.Model):
     role_id = db.Column(db.Integer, db.ForeignKey('roles.id'))
 
     def __repr__(self):
-        return '<User %r>' % self.username
+        return '<%r %r>' % (self.__class__.__name__, self.username)
+
+
+class NewModel(db.Model):
+    __tablename__ = 'newmodel'
+    id = db.Column(db.Integer, primary_key=True)
+
+    def __repr__(self):
+        return '<%r %r>' % (self.__class__.__name__, self.id)
 
 
 # view function
@@ -66,10 +84,13 @@ class User(db.Model):
 def index():
     form = NameForm()
     if form.validate_on_submit():
-        old_name = session.get('name')
-        if old_name is not None and old_name != form.name.data:
-            # flash
-            flash('Looks like you have changed your name!')
+        user = User.query.filter_by(username=form.name.data).first()
+        if user is None:
+            user = User(username=form.name.data)
+            db.session.add(user)
+            session['known'] = False
+        else:
+            session['known'] = True
         session['name'] = form.name.data
         form.name.data = ''
         # The local "name" variable is now placed in the user session as session['name'] so that
@@ -78,9 +99,11 @@ def index():
     return render_template('index.html',
                            current_time=datetime.utcnow(),
                            name=session.get('name'),
-                           form=form)
+                           form=form,
+                           known=session.get('known', False))
     # user_agent = request.headers.get('User-Agent')
-    # response = make_response('<h1>Your User-Agent is %s\n, This document carries a cookie!</h1>' % user_agent)
+    # response = make_response('<h1>Your User-Agent is %s\n,
+    # This document carries a cookie!</h1>' % user_agent)
     # response.set_cookie('answer', '42')
     # return response
     # return '<p>Your browser is %s</p>' % user_agent
@@ -107,5 +130,5 @@ def internal_server_error(e):
 
 
 if __name__ == '__main__':
-    # mgr.run()
-    app.run(debug=True)
+    mgr.run()
+    # app.run(debug=True)
